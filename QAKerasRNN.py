@@ -1,4 +1,3 @@
-# LSTM for sequence classification in the IMDB dataset
 import numpy
 from keras.models import Sequential
 from keras.layers import Dense
