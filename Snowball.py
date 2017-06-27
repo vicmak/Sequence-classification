@@ -11,6 +11,7 @@ import nltk
 import mmap
 import itertools
 from sklearn import model_selection
+import copy
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import recall_score
 from keras.layers import Dropout
@@ -18,6 +19,13 @@ from keras.layers import Dropout
 
 q_ids = []
 UNLABELED_INSTANCES_NUMBER = 1000
+
+
+def is_common(common_list, word):
+    for pair in common_list:
+        if pair[0] == word:
+            return True
+    return False
 
 
 class Vocab:  # Storing the vocabulary and word-2-id mappings
@@ -36,6 +44,25 @@ class Vocab:  # Storing the vocabulary and word-2-id mappings
     def size(self): return len(self.w2i.keys())
 
 
+vocab_filename = "C:\\corpora\\yahoo\\titles20M\\small_vocab.txt"
+
+def read_vocab_from_list(filename):
+    w2i = dict()
+    counter = 0
+    with open(filename) as dict_file:
+        for line in dict_file:
+            word = line.strip()
+            w2i[word] = counter
+            counter += 1
+    return w2i
+
+
+vocab_dictionary = read_vocab_from_list(vocab_filename)
+
+main_vocab = Vocab(vocab_dictionary)
+
+print "Vocab size", main_vocab.size()
+
 def ExtractAlphanumeric(ins):
     from string import ascii_letters, digits, whitespace, punctuation
     return "".join([ch for ch in ins if ch in (ascii_letters + digits + whitespace + punctuation)])
@@ -49,6 +76,14 @@ def get_padded_sentences_tokens_list(text):
         tokens += ["<sentence-start>"] + sent_tokens + ["<sentence-stop>"]
 
     return tokens
+
+
+def get_int_sentences(sentences, vocab):
+    int_sents = []
+    for sentence in sentences:
+        isent = [vocab.w2i[w] for w in sentence]
+        int_sents.append(isent)
+    return int_sents
 
 
 class UnlabeledFastCorpusReader:
@@ -66,12 +101,17 @@ class UnlabeledFastCorpusReader:
                 yield line
 
 
-def get_tokenized_padded_line(string_line):
+def get_tokenized_padded_line(string_line, vocab):
     line = string_line.lower()
     line = ExtractAlphanumeric(line)
     tokens = get_padded_sentences_tokens_list(line)
     line = ["<start>"] + tokens + ["<stop>"]
-    return line
+
+    clean_line = []
+    for token in line:
+        if token in vocab.w2i.keys():
+            clean_line.append(token)
+    return clean_line
 
 
 class CompleteCorpusReader:
@@ -92,7 +132,7 @@ class CompleteCorpusReader:
             end = len(parts)-1
             text_parts = parts[1: end]  # Extract all title words, except for the classification value
             line = ",".join(text_parts)
-            line = get_tokenized_padded_line(line)
+            line = get_tokenized_padded_line(line, main_vocab)
             # Yield a list of tokens for this question
             yield line
 
@@ -104,7 +144,7 @@ class CompleteCorpusReader:
                 line = current_line.strip()
                 tokens = line.split("\t")
                 line = tokens[8]
-                line = get_tokenized_padded_line(line)
+                line = get_tokenized_padded_line(line, main_vocab)
                 yield line
 
 
@@ -126,10 +166,10 @@ class FastCorpusReaderYahoo:
 
             parts = data.split(",") #get the title of the question
 
-            qid = parts[0] # Extract the question-ID
-            q_ids.append(qid) # Add the question-ID to list of all extracted Question-IDs
+            qid = parts[0]  # Extract the question-ID
+            q_ids.append(qid)  # Add the question-ID to list of all extracted Question-IDs
 
-            #Read the description into string (TAB separated)
+            # Read the description into string (TAB separated)
             description = ""  # Init the description string
             answer = ""
             '''
@@ -151,13 +191,26 @@ class FastCorpusReaderYahoo:
             '''
 
             end = len(parts)-1
-            text_parts = parts[1 : end] #Extract all title words, except for the classification value
+            text_parts = parts[1 : end] # Extract all title words, except for the classification value
             line = ",".join(text_parts)
             data = m.readline()
             line = line.lower() + description.lower() + answer.lower()
-            line = get_tokenized_padded_line(line)
-            #Yield a list of tokens for this question
+            line = get_tokenized_padded_line(line, main_vocab)
+            # Yield a list of tokens for this question
             yield line
+
+
+def read_next_lines(filename, from_line_number, to_line_number):
+
+    lines = []
+    with open(filename) as unlabeled_file:
+        for line in itertools.islice(unlabeled_file, from_line_number, to_line_number):
+            parts = line.split("\t")
+            title = parts[8]
+            title = title.lower()
+            tokenized_title = get_tokenized_padded_line(title, main_vocab)
+            lines.append(tokenized_title)
+    return lines
 
 
 def readY(fname):
@@ -199,35 +252,8 @@ def read_word2vec_embeddings(embeddings_filename):
 labeled_title_filename = "C:\\corpora\\yahoo\\TitleUnescaped.csv"
 unlabeled_titles_filename = "C:\\corpora\\yahoo\\titles20M\\question.tsv"
 
-print "Read all unlabeled + labeled file..."
-all_train = CompleteCorpusReader(labeled_title_filename)
-complete_vocab = Vocab.from_corpus(all_train)
-
-
 print "Read labeled file..."
 labeled_train = FastCorpusReaderYahoo(labeled_title_filename)
-labeled_vocab = Vocab.from_corpus(labeled_train)
-
-
-print "Read unlabeled file..."
-unlabeled_train = UnlabeledFastCorpusReader(unlabeled_titles_filename)
-unlabeled_vocab = Vocab.from_corpus(unlabeled_train)
-
-print "COMPLETE vocab size", complete_vocab.size()
-print "LABELED vocab size", labeled_vocab.size()
-print "UNLABELED vocab", unlabeled_vocab.size()
-
-print "checking labeled vocab"
-for l_key in labeled_vocab.w2i.keys():
-    if l_key not in complete_vocab.w2i.keys():
-        print l_key
-
-print "checking unlabeled vocab"
-for u_key in unlabeled_vocab.w2i.keys():
-    if u_key not in complete_vocab.w2i.keys():
-        print u_key
-
-print "vocabs OK"
 
 embeddings_filename = "C:\\corpora\\embeddings\\titles300d.txt"
 
@@ -239,8 +265,8 @@ print "Checking embeddings for THE", embs["the"]
 embedding_vector_length = 300
 
 print "computing embeddings"
-embedding_weights = np.zeros((complete_vocab.size(), embedding_vector_length))
-for word, index in complete_vocab.w2i.items():
+embedding_weights = np.zeros((main_vocab.size(), embedding_vector_length))
+for word, index in main_vocab.w2i.items():
     if word in embs.keys():
         embedding_weights[index, :] = embs[word]
     else:
@@ -251,63 +277,196 @@ for word, index in complete_vocab.w2i.items():
 print "embedding sample", embedding_weights[0]
 print "another embedding sample", embedding_weights[1]
 
-
+print "Reading Ys"
 Ys = readY(labeled_title_filename)
+
 labeled_train = list(labeled_train)
-unlabeled_train = list(unlabeled_train)
-
-complete_text = ""
-
-lengths = []
-
-
-def is_common(common_list, word):
-    for pair in common_list:
-        if pair[0] == word:
-            return True
-    return False
-
-
-int_train = []
-i = 0
-
 print "Creating labeled i-sentences for training"
-for sentence in labeled_train:
-    isent = [complete_vocab.w2i[w] for w in sentence]
-    int_train.append(isent)
+int_train = get_int_sentences(labeled_train, main_vocab)
 
-
-int_unlabeled_train = []
-
-
-print "Creating unlabeled i-sentences for training"
-for sentence in unlabeled_train:
-    isent = [complete_vocab.w2i[w] for w in sentence]
-    int_unlabeled_train.append(isent)
-
+unlabeled_batch_size = 1000
 max_sent_length = 30
 
-print " Building the model....."
-# start label propagation
-model = Sequential()
-model.add(Embedding(complete_vocab.size(), embedding_vector_length, input_length=max_sent_length, weights=[embedding_weights]))
-# model.add(Dropout(0.1))
-model.add(LSTM(200, recurrent_dropout=0.3))
-# model.add(Dropout(0.2))
-model.add(Dense(1, activation='sigmoid'))
-model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+new_instances = []
+new_Ys = []
 
-padded_train = sequence.pad_sequences(int_train, max_sent_length)
+original_instances = copy.deepcopy(int_train)
+original_Ys = copy.deepcopy(Ys)
 
-print "fitting the model"
-model.fit(padded_train, Ys, epochs=4, batch_size=100)
 
-padded_test = sequence.pad_sequences(int_unlabeled_train, max_sent_length)
-print "Predicting..."
-predictions = model.predict(padded_test)
-for pred in predictions:
-    print pred
+def get_ensemble_data(text_probs):
 
+    classes = []
+    instances = []
+    ensemble_filename = "C:\\corpora\\yahoo\\Ensemble_Data_baseline.csv"
+    for_asert = 0
+    qid_counter = dict()
+    with file(ensemble_filename) as f:
+        for line in f:
+            tokens = line.strip().split(",")
+            qid = tokens[0]
+            for [id, text_prob] in text_probs:
+                if qid == id:
+                    if qid in qid_counter.keys():
+                        qid_counter[qid] += 1
+                    else:
+                        qid_counter[qid] = 1
+                        instance =[]
+                        instance.append(float(tokens[1]))
+                        instance.append(text_prob[0])
+                        instance.append(float(tokens[3]))
+                        instances.append(instance)
+                        classes.append(int(tokens[4]))
+                        for_asert +=1
+
+    return instances, classes
+
+
+
+
+
+for i in range(0, 5):
+
+    unlabeled_train = read_next_lines(unlabeled_titles_filename, i*unlabeled_batch_size, i*unlabeled_batch_size + unlabeled_batch_size)
+    print "Creating unlabeled i-sentences for training, batch:", i
+    int_unlabeled_train = get_int_sentences(unlabeled_train, main_vocab)
+
+    print " Building the model....."
+    # start label propagation
+    model = Sequential()
+    model.add(Embedding(main_vocab.size(), embedding_vector_length, input_length=max_sent_length, weights=[embedding_weights]))
+    model.add(LSTM(200, recurrent_dropout=0.3))
+    model.add(Dense(1, activation='sigmoid'))
+    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+    print "Padding the model"
+    padded_train = sequence.pad_sequences(int_train, max_sent_length)
+
+    print "fitting the model"
+    model.fit(padded_train, Ys, epochs=4, batch_size=100)
+    print "Padding test"
+    padded_test = sequence.pad_sequences(int_unlabeled_train, max_sent_length)
+    print "Predicting..."
+    predictions = model.predict(padded_test)
+
+    # Here add the best predictions to the labeled instances
+
+    new_instances_num = 0
+    for i in range(0, len(predictions)):
+        if predictions[i] > 0.9:
+            int_train.append(int_unlabeled_train[i])
+            new_instances.append(int_unlabeled_train[i])
+            Ys.append(1)
+            new_Ys.append(1)
+            new_instances_num += 1
+        if predictions[i] < 0.1:
+            int_train.append(int_unlabeled_train[i])
+            new_instances.append(int_unlabeled_train[i])
+            Ys.append(0)
+            new_Ys.append(0)
+            new_instances_num += 1
+    print "Added new instances:", new_instances_num
+
+    print "STARTING K-FOLD, TEST"
+
+    recall_1_list = []
+    recall_0_list = []
+    auc = []
+    accumulator_probs = []
+
+    kf = model_selection.KFold(n_splits=2)
+    for train_idx, test_idx in kf.split(original_instances):
+
+        X_train = [original_instances[i] for i in train_idx]
+        Y_train = [original_Ys[i] for i in train_idx]
+        X_train = X_train + new_instances
+        Y_train = Y_train + new_Ys
+
+        X_test = [int_train[i] for i in test_idx]
+        Y_test = [Ys[i] for i in test_idx]
+        q_ids_test = [q_ids[i] for i in test_idx]
+
+        X_train = sequence.pad_sequences(X_train, maxlen=max_sent_length)
+        X_test = sequence.pad_sequences(X_test, maxlen=max_sent_length)
+
+        model = Sequential()
+        model.add(Embedding(main_vocab.size(), embedding_vector_length, input_length=max_sent_length, weights=[embedding_weights]))
+        model.add(LSTM(200, recurrent_dropout=0.3))
+        model.add(Dense(1, activation='sigmoid'))
+        model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+        model.fit(X_train, Y_train, epochs=4, batch_size=100)
+        predictions = model.predict(X_test)
+
+        for i in range(0, len(q_ids_test)):
+            accumulator_probs.append([q_ids_test[i], predictions[i]])
+
+        auc.append(roc_auc_score(Y_test, predictions))
+
+        rounded = []
+        for pred in predictions:
+            if pred > 0.5:
+                rounded.append(1)
+            else:
+                rounded.append(0)
+
+        recall_0_list.append(recall_score(Y_test, rounded, pos_label=0))
+        recall_1_list.append(recall_score(Y_test, rounded, pos_label=1))
+        print "FINISHED FOLD - TRAIN TEXT"
+
+    print "STARTING ENSEMBLE"
+
+    instances, classes = get_ensemble_data(accumulator_probs)
+
+    ensemble_recall_1_list = []
+    ensemble_recall_0_list = []
+    ensemble_auc = []
+
+    kf = model_selection.KFold(n_splits=2)
+
+    for train_idx, test_idx in kf.split(instances):
+
+        print "ENSEMBLE FOLD"
+
+        X_train = np.array([instances[i] for i in train_idx])
+        Y_train = np.array([classes[i] for i in train_idx])
+
+        X_test = [instances[i] for i in test_idx]
+        Y_test = [classes[i] for i in test_idx]
+
+        ensemble_model = Sequential()
+        ensemble_model.add(Dense(units=3, activation="sigmoid", input_shape=(3,)))
+        ensemble_model.add(Dense(1, kernel_initializer='normal', activation='sigmoid'))
+
+        ensemble_model.compile(loss="binary_crossentropy", optimizer="adam")
+
+        ensemble_model.fit(X_train, Y_train, epochs=3)
+
+        print"FITTED"
+
+        predictions = ensemble_model.predict(X_test)
+        # print predictions
+
+        ensemble_auc.append(roc_auc_score(Y_test, predictions))
+
+        rounded = []
+        for pred in predictions:
+            if pred > 0.5:
+                rounded.append(1)
+            else:
+                rounded.append(0)
+
+        ensemble_recall_0_list.append(recall_score(Y_test, rounded, pos_label=0))
+        ensemble_recall_1_list.append(recall_score(Y_test, rounded, pos_label=1))
+
+    print "TEXT:"
+    print "RECALL 0:", sum(recall_0_list) / float(len(recall_0_list))
+    print "RECALL 1:", sum(recall_1_list) / float(len(recall_1_list))
+    print "AUC :", sum(auc) / float(len(auc))
+
+    print "ENSEMBLE"
+    print "RECALL 0:", sum(ensemble_recall_0_list) / float(len(ensemble_recall_0_list))
+    print "RECALL 1:", sum(ensemble_recall_1_list) / float(len(ensemble_recall_1_list))
+    print "AUC :", sum(ensemble_auc) / float(len(ensemble_auc))
 
 '''
 
