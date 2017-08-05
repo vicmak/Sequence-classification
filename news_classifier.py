@@ -1,6 +1,10 @@
-import numpy
-from keras.models import Sequential
 
+import numpy
+# Set random seed to produce repeatable results
+numpy.random.seed(7)
+
+from keras.models import Sequential
+import random
 from keras.layers import Dense
 from keras.layers import LSTM, Bidirectional
 from keras.layers.embeddings import Embedding
@@ -20,7 +24,7 @@ class Vocab:  # Storing the vocabulary and word-2-id mappings
     def __init__(self, w2i=None):
         if w2i is None: w2i = defaultdict(count(0).next)
         self.w2i = dict(w2i)
-        self.i2w = {i: w for w, i in w2i.iteritems()}
+        self.i2w = {i:w for w,i in w2i.iteritems()}
 
     @classmethod
     def from_corpus(cls, corpus):
@@ -43,7 +47,7 @@ def get_padded_sentences_tokens_list(text, mark=""):
     for sent in sentences:
         sent_tokens = nltk.word_tokenize(sent)
         new_tokens = [token + mark for token in sent_tokens]
-        tokens += ["<start>"] + new_tokens + ["<stop>"]
+        tokens += ["<sentence_start>"] + new_tokens + ["<sentence_stop>"]
 
     return tokens
 
@@ -55,16 +59,14 @@ class NewsCorpusReader:
         self.positive_number = 0
         self.negative_number = 0
 
-    def __iter__(self): # Yields one instance as a list of words
+    def __iter__(self):  # Yields one instance as a list of words
 
         for root, dirs, files in os.walk(self.positive_news_path):
             path = root.split(os.sep)
             print((len(path) - 1) * '---', os.path.basename(root))
-            for file in files:
+            for filename in files:
 
-                # print(len(path) * '---', file)
-
-                title = file.lower()
+                title = filename.lower()
 
                 title = ExtractAlphanumeric(title)
 
@@ -78,11 +80,9 @@ class NewsCorpusReader:
         for root, dirs, files in os.walk(self.negative_news_path):
             path = root.split(os.sep)
             print((len(path) - 1) * '---', os.path.basename(root))
-            for file in files:
+            for filename in files:
 
-                # print(len(path) * '---', file)
-
-                title = file.lower()
+                title = filename.lower()
 
                 title = ExtractAlphanumeric(title)
 
@@ -93,10 +93,11 @@ class NewsCorpusReader:
                 self.negative_number += 1
                 yield tokens_list
 
-print "Read file..."
+print "Read Training folder..."
 train = NewsCorpusReader("/Users/macbook/Dropbox/EventRegistry/Times of Israel", "/Users/macbook/Dropbox/EventRegistry/www.aljazeera.com")
-
-print "Creating vocab..."
+print "Read Testing folder..."
+test = NewsCorpusReader("/Users/macbook/Dropbox/only agreement/israeli", "/Users/macbook/Dropbox/only agreement/arab")
+print "Creating train vocab..."
 vocab = Vocab.from_corpus(train)
 
 positive_train_num = train.positive_number
@@ -105,72 +106,90 @@ negative_train_num = train.negative_number
 print "Vocabulary size:", vocab.size()
 
 train_list = list(train)
+test_list = list(test)
 
+print "TEST SIZE:", len(test_list)
 
-print "all", len(train_list)
+positive_test_num = test.positive_number
+negative_test_num = test.negative_number
 
+print "Positive test N", positive_test_num
+print "Negative test N", negative_test_num
 
-positive_examples = train_list[0:positive_train_num]
-negative_examples = train_list[positive_train_num:]
-
-train_list = [j for i in zip(positive_examples, negative_examples) for j in i]
-
-
+# Creating the train set - labels
 Ys = []
 for i in range(0, positive_train_num):
     Ys.append(1)
 for i in range(0, negative_train_num):
     Ys.append(0)
 
-positive_labels = Ys[0:positive_train_num]
-negative_labels = Ys[positive_train_num:]
+# We need to shuffle the train with its labels accordingly
+c = list(zip(train_list, Ys))
+random.shuffle(c)
+train_list, arr_Ys = zip(*c) # The results are arrays
 
-Ys = [j for i in zip(positive_labels, negative_labels) for j in i]
+# Convert back into list, so we can use it in training
+Ys = []
+for item in arr_Ys:
+    Ys.append(item)
+
+test_Ys = []
+
+for i in range(0, positive_test_num):
+    test_Ys.append(1)
+for i in range(0, negative_test_num):
+    test_Ys.append(0)
+
+# Shuffle the train instances and labels together
+c = list(zip(test_list, test_Ys))
+random.shuffle(c)
+test_list, test_Ys = zip(*c)
 
 int_train = []
 
-for sentence in train_list:
-    print "sentence:",sentence
-    isent = [vocab.w2i[w] for w in sentence]
-    int_train.append(isent)
+for item in train_list:
+    int_item = [vocab.w2i[w] for w in item]
+    int_train.append(int_item)
 
-print "total instances:", len(int_train)
+int_test = []
+
+for item in test_list:
+    int_item = [vocab.w2i[w] for w in item if w in vocab.w2i.keys()]
+    int_test.append(int_item)
 
 
-numpy.random.seed(7)
 max_sent_length = 10
 embedding_vector_length = 50
+memory_size = 50
 WORDS_NUM = vocab.size()
 
+X_train = int_train
+Y_train = Ys
+X_train = sequence.pad_sequences(X_train, maxlen=max_sent_length)
 
-kf = model_selection.KFold(n_splits=5)
-for train_idx, test_idx in kf.split(int_train):
+X_test = int_test
+Y_test = test_Ys
+X_test = sequence.pad_sequences(X_test, maxlen=max_sent_length)
 
-    X_train = [int_train[i] for i in train_idx]
-    Y_train = [Ys[i] for i in train_idx]
+model = Sequential()
+model.add(Embedding(WORDS_NUM, embedding_vector_length, input_length=max_sent_length))
+model.add(LSTM(memory_size))
+model.add(Dense(1, activation='sigmoid'))
+model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 
-    X_test = [int_train[i] for i in test_idx]
-    Y_test = [Ys[i] for i in test_idx]
+print "Fitting the model - Train start"
 
-    X_train = sequence.pad_sequences(X_train, maxlen=max_sent_length)
-    X_test = sequence.pad_sequences(X_test, maxlen=max_sent_length)
-    # create the model
+model.fit(X_train, Y_train, epochs=10, batch_size=100)
 
-    model = Sequential()
-    model.add(Embedding(WORDS_NUM, embedding_vector_length, input_length=max_sent_length))
+predictions = model.predict(X_test)
 
-    model.add(LSTM(50))
-    model.add(Dense(1, activation='sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+rounded = []
+for prediction_value in predictions:
+    if prediction_value > 0.5:
+        rounded.append(1)
+    else:
+        rounded.append(0)
 
-    print "Fitting the model"
-
-    model.fit(X_train, Y_train, epochs=4, batch_size=100)
-
-    predictions = model.predict(X_test)
-
-    print "AUC:", roc_auc_score(Y_test, predictions)
-
-
-
-
+print "Israeli Recall:", recall_score(Y_test, rounded, pos_label=1)
+print "Palestinian Recall:", recall_score(Y_test, rounded, pos_label=0)
+print "AUC:", roc_auc_score(Y_test, predictions)
